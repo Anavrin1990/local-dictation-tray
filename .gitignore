@@ -1,0 +1,30 @@
+# Build environments and generated distributions
+.build/
+build/
+dist/
+dist-installer/
+*.spec
+
+# Bundled Whisper model (downloaded by the release build)
+assets/models/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local runtime data
+*.log
+*.sqlite3
+recordings/
+config.json
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
