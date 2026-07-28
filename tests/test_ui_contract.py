@@ -31,6 +31,21 @@ class TrayUiContractTests(unittest.TestCase):
         self.assertIn("self.hotkey.stop()", source)
         self.assertIn("self.controller.shutdown()", source)
 
+    def test_custom_microphone_icon_is_used_by_app_and_packaging(self) -> None:
+        source = (ROOT / "dictation_tray" / "qt_app.py").read_text(encoding="utf-8")
+        build = (ROOT / "scripts" / "build-installer.ps1").read_text(encoding="utf-8")
+        installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+        self.assertIn('assets" / "tray-icon.ico"', source)
+        self.assertIn('"--icon", $iconPath', build)
+        self.assertIn("SetupIconFile={#IconFile}", installer)
+        self.assertTrue((ROOT / "assets" / "tray-icon.ico").is_file())
+
+    def test_installer_enables_startup_by_default(self) -> None:
+        installer = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+        startup_line = next(line for line in installer.splitlines() if 'Name: "startup"' in line)
+        self.assertIn("checkedonce", startup_line)
+        self.assertNotIn("unchecked", startup_line)
+
     def test_packaging_self_check_contract_is_implemented_by_entrypoint(self) -> None:
         package_test = (ROOT / "scripts" / "test-package.ps1").read_text(encoding="utf-8")
         entrypoint = (ROOT / "dictation_tray" / "main.py").read_text(encoding="utf-8")

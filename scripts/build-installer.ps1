@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.1.1",
     [string]$EntryPoint,
     [string]$AppName = "Local Dictation",
     [string]$AppExeName = "LocalDictationTray.exe",
@@ -18,6 +18,7 @@ $distRoot = Join-Path $projectRoot "dist"
 $distDir = Join-Path $distRoot "LocalDictationTray"
 $installerOutput = Join-Path $projectRoot "dist-installer"
 $modelRoot = if ($ModelDirectory) { $ModelDirectory } else { Join-Path $projectRoot "assets\models\faster-whisper-base" }
+$iconPath = Join-Path $projectRoot "assets\tray-icon.ico"
 
 function Find-Python {
     $candidates = @(@("py", "-3.12"), @("py", "-3.11"), @("python", ""))
@@ -46,6 +47,7 @@ function Find-InnoCompiler {
 if (-not $EntryPoint) { $EntryPoint = Join-Path $projectRoot "main.py" }
 if (-not (Test-Path -LiteralPath $EntryPoint -PathType Leaf)) { throw "Entry point not found: $EntryPoint" }
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "requirements.txt") -PathType Leaf)) { throw "requirements.txt was not found." }
+if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf)) { throw "Application icon was not found: $iconPath" }
 
 $python = Find-Python
 $venvPath = Join-Path $buildRoot ("packaging-venv-" + $python.Version)
@@ -80,6 +82,7 @@ $pyInstallerArgs = @(
     "--distpath", $distRoot, "--workpath", (Join-Path $buildRoot "pyinstaller-work"),
     "--specpath", (Join-Path $buildRoot "pyinstaller-spec"), "--paths", $projectRoot,
     "--runtime-hook", $hookPath, "--add-data", "$modelRoot;models\faster-whisper-base",
+    "--add-data", "$iconPath;assets", "--icon", $iconPath,
     "--collect-all", "faster_whisper", "--collect-all", "ctranslate2", "--collect-all", "av",
     "--collect-all", "PySide6", "--hidden-import", "sounddevice", "--hidden-import", "keyboard",
     "--hidden-import", "pyperclip", $EntryPoint
@@ -92,7 +95,7 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with code $LASTEXITCODE" }
 $iscc = Find-InnoCompiler $InnoCompiler
 $issPath = Join-Path $projectRoot "packaging\installer.iss"
 $baseName = "LocalDictationTray-$Version-Setup"
-& $iscc "/DAppName=$AppName" "/DAppVersion=$Version" "/DAppExeName=$AppExeName" "/DSourceDir=$distDir" "/DOutputDir=$installerOutput" "/DOutputBaseName=$baseName" $issPath
+& $iscc "/DAppName=$AppName" "/DAppVersion=$Version" "/DAppExeName=$AppExeName" "/DSourceDir=$distDir" "/DOutputDir=$installerOutput" "/DOutputBaseName=$baseName" "/DIconFile=$iconPath" $issPath
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with code $LASTEXITCODE" }
 
 $installer = Join-Path $installerOutput "$baseName.exe"

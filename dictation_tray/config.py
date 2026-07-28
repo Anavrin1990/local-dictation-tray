@@ -9,7 +9,7 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class AppConfig:
-    hotkey: str = "ctrl+alt+space"
+    hotkey: str = "ctrl+alt"
     model: str = "base"
     language: str = "ru"
     microphone: str | None = None
@@ -37,7 +37,11 @@ class ConfigStore:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             allowed = {field.name for field in fields(AppConfig)}
-            config = AppConfig(**{k: v for k, v in raw.items() if k in allowed})
+            values = {k: v for k, v in raw.items() if k in allowed}
+            # v0.1.1 changes the original default chord while preserving custom hotkeys.
+            if values.get("hotkey") == "ctrl+alt+space":
+                values["hotkey"] = "ctrl+alt"
+            config = AppConfig(**values)
             config.validate()
             return config
         except (OSError, json.JSONDecodeError, TypeError, ValueError):

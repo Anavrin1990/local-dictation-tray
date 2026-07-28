@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -8,7 +9,7 @@ from PySide6.QtGui import QAction, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox,
-    QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 from .audio import MicrophoneRecorder
@@ -16,6 +17,11 @@ from .config import AppConfig, ConfigStore
 from .controller import DictationController
 from .history import HistoryRepository
 from .hotkey import HoldHotkey
+
+
+def application_icon() -> QIcon:
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return QIcon(str(bundle_root / "assets" / "tray-icon.ico"))
 
 
 class UiEvents(QObject):
@@ -31,7 +37,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.hotkey = QLineEdit(config.hotkey)
-        self.hotkey.setPlaceholderText("Например: ctrl+alt+space")
+        self.hotkey.setPlaceholderText("Например: ctrl+alt")
         self.model = QComboBox()
         # The installer bundles this model, so the application remains offline after installation.
         self.model.addItem("base (встроенная, локальная)", "base")
@@ -145,10 +151,10 @@ class TrayApplication(QObject):
         self.controller = DictationController(
             self.config, history, recordings_dir, self.events.status.emit, self.events.error.emit, logger=logger
         )
-        self.tray = QSystemTrayIcon(app.style().standardIcon(QStyle.SP_MediaVolume), self)
+        self.tray = QSystemTrayIcon(application_icon(), self)
         self.tray.setToolTip("Локальная диктовка — готово")
         self.menu = QMenu()
-        self.status_action = QAction("Готово: удерживайте Ctrl+Alt+Space", self.menu)
+        self.status_action = QAction("Готово: удерживайте Ctrl+Alt", self.menu)
         self.status_action.setEnabled(False)
         self.menu.addAction(self.status_action)
         self.menu.addSeparator()

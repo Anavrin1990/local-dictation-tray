@@ -38,10 +38,11 @@ def main() -> int:
     if "--self-check" in sys.argv[1:]:
         return self_check()
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon
-    from .qt_app import TrayApplication
+    from .qt_app import TrayApplication, application_icon
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Локальная диктовка")
+    app.setWindowIcon(application_icon())
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return 2
     base = ensure_app_dirs()

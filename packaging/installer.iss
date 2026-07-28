@@ -4,7 +4,7 @@
   #define AppName "Local Dictation"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 #ifndef AppExeName
   #define AppExeName "LocalDictationTray.exe"
@@ -17,6 +17,9 @@
 #endif
 #ifndef OutputBaseName
   #define OutputBaseName "LocalDictationTray-Setup"
+#endif
+#ifndef IconFile
+  #define IconFile "..\assets\tray-icon.ico"
 #endif
 
 [Setup]
@@ -35,12 +38,13 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
+SetupIconFile={#IconFile}
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
-Name: "startup"; Description: "Start with Windows"; GroupDescription: "Additional settings:"; Flags: unchecked
+Name: "startup"; Description: "Start with Windows"; GroupDescription: "Additional settings:"; Flags: checkedonce
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
