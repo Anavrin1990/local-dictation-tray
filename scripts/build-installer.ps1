@@ -57,10 +57,17 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated build environment." }
 }
 
-& $venvPython -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
-& $venvPython -m pip install -r (Join-Path $projectRoot "requirements.txt") "huggingface_hub>=0.25,<1"
-if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+if ($Offline) {
+    & $venvPython -c "import PyInstaller, PySide6, numpy, sounddevice, keyboard, pyperclip, faster_whisper, ctranslate2, huggingface_hub"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Offline build requires all dependencies in the existing build environment: $venvPath"
+    }
+} else {
+    & $venvPython -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
+    & $venvPython -m pip install -r (Join-Path $projectRoot "requirements.txt") "huggingface_hub>=0.25,<1"
+    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $modelRoot "model.bin") -PathType Leaf)) {
     if ($Offline) { throw "Offline build requires a prepared model directory: $modelRoot" }

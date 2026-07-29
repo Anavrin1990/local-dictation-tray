@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -17,6 +18,16 @@ class AppConfig:
     auto_paste: bool = True
     keep_recordings: bool = False
     history_limit: int = 2000
+    live_preview_enabled: bool = True
+    overlay_max_width: int = 520
+    overlay_max_height: int = 220
+    overlay_position: str = "above"
+    overlay_offset_x: int = 0
+    overlay_offset_y: int = 0
+    overlay_background_color: str = "#17172B"
+    overlay_text_color: str = "#F7F7FF"
+    overlay_provisional_color: str = "#AEB4D0"
+    overlay_opacity: int = 88
 
     def validate(self) -> None:
         if not self.hotkey or not self.hotkey.strip():
@@ -25,6 +36,24 @@ class AppConfig:
             raise ValueError("Неподдерживаемая частота дискретизации")
         if self.history_limit < 1 or self.history_limit > 100_000:
             raise ValueError("Лимит истории должен быть от 1 до 100000")
+        if not 240 <= self.overlay_max_width <= 1400:
+            raise ValueError("Максимальная ширина окна должна быть от 240 до 1400")
+        if not 80 <= self.overlay_max_height <= 900:
+            raise ValueError("Максимальная высота окна должна быть от 80 до 900")
+        if self.overlay_position not in {"above", "below", "left", "right"}:
+            raise ValueError("Неизвестное положение окна диктовки")
+        if not -1000 <= self.overlay_offset_x <= 1000 or not -1000 <= self.overlay_offset_y <= 1000:
+            raise ValueError("Смещение окна должно быть от -1000 до 1000")
+        if not 20 <= self.overlay_opacity <= 100:
+            raise ValueError("Прозрачность подложки должна быть от 20 до 100")
+        color_pattern = re.compile(r"^#[0-9A-Fa-f]{6}$")
+        for color in (
+            self.overlay_background_color,
+            self.overlay_text_color,
+            self.overlay_provisional_color,
+        ):
+            if not color_pattern.fullmatch(color):
+                raise ValueError("Цвет должен быть записан в формате #RRGGBB")
 
 
 class ConfigStore:

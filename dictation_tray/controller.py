@@ -29,16 +29,28 @@ class DictationController:
         transcriber_factory: Callable[..., LocalWhisperTranscriber] = LocalWhisperTranscriber,
         paste: Callable[[str], None] = paste_unicode,
         logger: logging.Logger | None = None,
+        on_recording_started: Callable[[], None] | None = None,
+        on_live_text: Callable[[str, str], None] | None = None,
+        on_processing_started: Callable[[], None] | None = None,
+        on_recording_finished: Callable[[str, bool], None] | None = None,
+        live_interval_seconds: float = 1.1,
     ):
         self.config, self.history, self.recordings_dir = config, history, recordings_dir
         self._status, self._error, self._paste = status, error, paste
         self._recorder_factory, self._transcriber_factory = recorder_factory, transcriber_factory
         self._logger = logger or logging.getLogger("dictation_tray")
+        self._on_recording_started = on_recording_started or (lambda: None)
+        self._on_live_text = on_live_text or (lambda _confirmed, _provisional: None)
+        self._on_processing_started = on_processing_started or (lambda: None)
+        self._on_recording_finished = on_recording_finished or (lambda _text, _success: None)
+        self._live_interval_seconds = max(0.01, live_interval_seconds)
         self._state = DictationState.IDLE
         self._lock = threading.Lock()
         self._recorder: MicrophoneRecorder | None = None
         self._transcriber: LocalWhisperTranscriber | None = None
         self._target_window: int | None = None
+        self._live_stop = threading.Event()
+        self._live_thread: threading.Thread | None = None
 
     @property
     def state(self) -> DictationState:
@@ -56,6 +68,16 @@ class DictationController:
             recorder.start()
             with self._lock:
                 self._recorder = recorder
+            self._live_stop.clear()
+            self._on_recording_started()
+            if self.config.live_preview_enabled and hasattr(recorder, "snapshot_to_wav"):
+                self._live_thread = threading.Thread(
+                    target=self._live_worker,
+                    args=(recorder,),
+                    name="whisper-preview-worker",
+                    daemon=True,
+                )
+                self._live_thread.start()
             self._status("● Идёт запись… отпустите горячую клавишу")
             return True
         except Exception as exc:
@@ -72,10 +94,14 @@ class DictationController:
                 return
             self._state = DictationState.TRANSCRIBING
             recorder, self._recorder = self._recorder, None
+        self._live_stop.set()
+        self._on_processing_started()
         threading.Thread(target=self._finish_worker, args=(recorder,), name="whisper-worker", daemon=True).start()
 
     def _finish_worker(self, recorder: MicrophoneRecorder) -> None:
         wav_path = self.recordings_dir / f"{uuid.uuid4().hex}.wav"
+        final_text = ""
+        success = False
         try:
             self._status("Расшифровка локальной моделью Whisper…")
             duration = recorder.stop_to_wav(wav_path)
@@ -86,6 +112,7 @@ class DictationController:
             if not text:
                 self._status("Речь не распознана")
                 return
+            final_text = text
             self.history.add(text, duration, language, self.config.history_limit)
             if self.config.auto_paste:
                 restore_foreground_window(self._target_window)
@@ -93,6 +120,7 @@ class DictationController:
                 self._status("Текст вставлен")
             else:
                 self._status("Текст сохранён в истории")
+            success = True
         except Exception as exc:
             self._logger.exception("Dictation processing failed")
             self._error(f"Ошибка расшифровки: {exc}")
@@ -109,6 +137,43 @@ class DictationController:
             with self._lock:
                 self._state = DictationState.IDLE
                 self._target_window = None
+            self._on_recording_finished(final_text, success)
+
+    def _live_worker(self, recorder: MicrophoneRecorder) -> None:
+        """Transcribe growing speech segments while recording; the final pass remains authoritative."""
+        committed = ""
+        segment_start_frame = 0
+        live_path = self.recordings_dir / f".live-{uuid.uuid4().hex}.wav"
+        try:
+            while not self._live_stop.wait(self._live_interval_seconds):
+                with self._lock:
+                    if self._state is not DictationState.RECORDING:
+                        return
+                snapshot = recorder.snapshot_to_wav(live_path, segment_start_frame)
+                if snapshot.duration < 0.65:
+                    continue
+                text, _language = self._get_transcriber().transcribe(live_path)
+                if self._live_stop.is_set():
+                    return
+                text = text.strip()
+                if not text:
+                    continue
+
+                ended_on_pause = snapshot.duration >= 1.1 and snapshot.recent_rms < 0.008
+                if ended_on_pause:
+                    committed = f"{committed} {text}".strip()
+                    segment_start_frame = snapshot.total_frames
+                    self._on_live_text(committed, "")
+                else:
+                    self._on_live_text(committed, text)
+        except Exception:
+            # Preview is optional: a failed interim pass must never break the final dictation.
+            self._logger.warning("Live transcription preview failed", exc_info=True)
+        finally:
+            try:
+                live_path.unlink(missing_ok=True)
+            except OSError:
+                self._logger.warning("Could not remove live preview recording")
 
     def _get_transcriber(self) -> LocalWhisperTranscriber:
         with self._lock:
@@ -125,9 +190,11 @@ class DictationController:
                 self._transcriber = None
 
     def shutdown(self) -> None:
+        self._live_stop.set()
         with self._lock:
             recorder, self._recorder = self._recorder, None
             self._state = DictationState.IDLE
             self._target_window = None
         if recorder is not None:
             recorder.abort()
+        self._on_recording_finished("", False)

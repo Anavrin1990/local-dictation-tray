@@ -47,6 +47,28 @@ class ConfigStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AppConfig(history_limit=0).validate()
 
+    def test_overlay_settings_round_trip_and_validate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "config.json"
+            expected = AppConfig(
+                overlay_max_width=640,
+                overlay_max_height=280,
+                overlay_position="right",
+                overlay_offset_x=24,
+                overlay_offset_y=-12,
+                overlay_background_color="#101225",
+                overlay_text_color="#F8F8FF",
+                overlay_provisional_color="#A9B1D6",
+                overlay_opacity=82,
+            )
+            ConfigStore(path).save(expected)
+            self.assertEqual(ConfigStore(path).load(), expected)
+
+        with self.assertRaises(ValueError):
+            AppConfig(overlay_max_width=100).validate()
+        with self.assertRaises(ValueError):
+            AppConfig(overlay_background_color="not-a-color").validate()
+
 
 class HistoryRepositoryTests(unittest.TestCase):
     def test_unicode_text_is_normalized_and_listed_newest_first(self) -> None:

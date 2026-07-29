@@ -46,6 +46,24 @@ class TrayUiContractTests(unittest.TestCase):
         self.assertIn("checkedonce", startup_line)
         self.assertNotIn("unchecked", startup_line)
 
+    def test_overlay_is_click_through_and_exposes_visual_settings(self) -> None:
+        source = (ROOT / "dictation_tray" / "qt_app.py").read_text(encoding="utf-8")
+        config = (ROOT / "dictation_tray" / "config.py").read_text(encoding="utf-8")
+        self.assertIn("class DictationOverlay", source)
+        self.assertIn("WA_TransparentForMouseEvents", source)
+        self.assertIn("WindowDoesNotAcceptFocus", source)
+        for setting in (
+            "overlay_max_width",
+            "overlay_max_height",
+            "overlay_position",
+            "overlay_background_color",
+            "overlay_text_color",
+            "overlay_provisional_color",
+            "overlay_opacity",
+        ):
+            self.assertIn(setting, config)
+            self.assertIn(setting, source)
+
     def test_packaging_self_check_contract_is_implemented_by_entrypoint(self) -> None:
         package_test = (ROOT / "scripts" / "test-package.ps1").read_text(encoding="utf-8")
         entrypoint = (ROOT / "dictation_tray" / "main.py").read_text(encoding="utf-8")

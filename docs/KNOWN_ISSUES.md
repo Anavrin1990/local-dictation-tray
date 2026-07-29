@@ -19,3 +19,11 @@ On machines whose execution policy blocks local `.ps1` files, invoke the checks 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\test-packaging-scripts.ps1
 ```
+
+## Packaged self-check returns code 2 in a restricted sandbox
+
+The packaged `--self-check` writes only to the normal per-user application data
+directory. A restricted build sandbox may deny that profile path and return code
+2 even when the package is valid. Re-run `scripts\test-package.ps1 -RunSelfCheck`
+with access to the real user `%APPDATA%`; do not weaken the application data path
+or disable the check.

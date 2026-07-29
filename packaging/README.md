@@ -50,6 +50,9 @@ runtime hook передаёт этот путь приложению автом�
 
 ## Known build environment issues
 
+* `-Offline` does not contact PyPI or Hugging Face. It requires an existing
+  `.build\packaging-venv-3.11` or `.build\packaging-venv-3.12` containing all
+  dependencies, plus a prepared model directory.
 * The build script deliberately rejects Python 3.14 and newer. As of this project,
   the frozen dependency set is supported only on CPython 3.11/3.12; accepting 3.14
   can make pip compile native packages instead of selecting compatible wheels.

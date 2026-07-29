@@ -13,6 +13,7 @@ class LocalWhisperTranscriber:
         self.language = language or None
         self._model = None
         self._model_lock = threading.Lock()
+        self._transcribe_lock = threading.Lock()
 
     def model_source(self) -> tuple[str, bool]:
         """Resolve the installer-bundled model without allowing a network fallback."""
@@ -31,10 +32,13 @@ class LocalWhisperTranscriber:
             return self._model
 
     def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
-        model = self._get_model()
-        segments, info = model.transcribe(
-            str(audio_path), language=self.language, vad_filter=True, beam_size=5,
-            condition_on_previous_text=False,
-        )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
-        return text, getattr(info, "language", self.language)
+        # CTranslate2 model instances are cached and shared by preview/final workers.
+        # Serialize calls so a final pass never races a still-running preview pass.
+        with self._transcribe_lock:
+            model = self._get_model()
+            segments, info = model.transcribe(
+                str(audio_path), language=self.language, vad_filter=True, beam_size=5,
+                condition_on_previous_text=False,
+            )
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+            return text, getattr(info, "language", self.language)

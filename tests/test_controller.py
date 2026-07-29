@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
+from dictation_tray.audio import AudioSnapshot
 from dictation_tray.config import AppConfig
 from dictation_tray.controller import DictationController, DictationState
 from dictation_tray.history import HistoryRepository
@@ -42,6 +43,20 @@ class FakeTranscriber:
         if self.error:
             raise self.error
         return self.text, "ru"
+
+
+class LiveFakeRecorder(FakeRecorder):
+    def snapshot_to_wav(self, output: Path, start_frame: int = 0) -> AudioSnapshot:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"live audio")
+        return AudioSnapshot(duration=1.2, total_frames=19200, recent_rms=0.02)
+
+
+class PreviewAwareTranscriber(FakeTranscriber):
+    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+        if audio_path.name.startswith(".live-"):
+            return "предварительный текст", "ru"
+        return "финальный текст.", "ru"
 
 
 class ControllerTests(unittest.TestCase):
@@ -161,6 +176,45 @@ class ControllerTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(controller.state, DictationState.IDLE)
         self.assertEqual(len(calls), 1)
+
+    def test_live_preview_is_replaced_by_final_full_transcription(self) -> None:
+        recorder = LiveFakeRecorder(16000, None)
+        live_updates: list[tuple[str, str]] = []
+        started = threading.Event()
+        preview_ready = threading.Event()
+        finished: list[tuple[str, bool]] = []
+
+        def on_live_text(confirmed: str, provisional: str) -> None:
+            live_updates.append((confirmed, provisional))
+            if provisional:
+                preview_ready.set()
+
+        controller = DictationController(
+            AppConfig(),
+            HistoryRepository(self.root / "history.sqlite3"),
+            self.root / "recordings",
+            self.statuses.append,
+            self.errors.append,
+            recorder_factory=lambda *_: recorder,
+            transcriber_factory=lambda *_: PreviewAwareTranscriber(),
+            paste=self.pasted.append,
+            on_recording_started=started.set,
+            on_live_text=on_live_text,
+            on_recording_finished=lambda text, success: finished.append((text, success)),
+            live_interval_seconds=0.01,
+        )
+
+        self.assertTrue(controller.begin())
+        self.assertTrue(started.wait(1))
+        self.assertTrue(preview_ready.wait(2))
+        controller.finish()
+        deadline = time.monotonic() + 3
+        while controller.state is not DictationState.IDLE and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertIn(("", "предварительный текст"), live_updates)
+        self.assertEqual(self.pasted, ["финальный текст."])
+        self.assertEqual(finished, [("финальный текст.", True)])
 
 
 if __name__ == "__main__":

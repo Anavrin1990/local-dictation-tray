@@ -3,7 +3,15 @@ from __future__ import annotations
 import threading
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class AudioSnapshot:
+    duration: float
+    total_frames: int
+    recent_rms: float
 
 
 class MicrophoneRecorder:
@@ -75,6 +83,34 @@ class MicrophoneRecorder:
             return 0.0
         audio = np.concatenate(chunks)
         duration = len(audio) / self.sample_rate
+        self._write_wav(output, audio)
+        return duration if started_at is None else max(duration, time.monotonic() - started_at)
+
+    def snapshot_to_wav(self, output: Path, start_frame: int = 0) -> AudioSnapshot:
+        """Copy the current recording segment without interrupting the microphone."""
+        import numpy as np
+
+        with self._lock:
+            chunks = list(self._chunks)
+        if not chunks:
+            return AudioSnapshot(0.0, 0, 0.0)
+
+        audio = np.concatenate(chunks)
+        total_frames = len(audio)
+        start_frame = max(0, min(start_frame, total_frames))
+        segment = audio[start_frame:]
+        if not len(segment):
+            return AudioSnapshot(0.0, total_frames, 0.0)
+
+        recent_frames = max(1, int(self.sample_rate * 0.65))
+        recent = segment[-recent_frames:]
+        recent_rms = float(np.sqrt(np.mean(np.square(recent, dtype=np.float64))))
+        self._write_wav(output, segment)
+        return AudioSnapshot(len(segment) / self.sample_rate, total_frames, recent_rms)
+
+    def _write_wav(self, output: Path, audio) -> None:
+        import numpy as np
+
         output.parent.mkdir(parents=True, exist_ok=True)
         pcm = np.clip(audio, -1, 1)
         pcm = (pcm * 32767).astype("<i2")
@@ -83,7 +119,6 @@ class MicrophoneRecorder:
             wav.setsampwidth(2)
             wav.setframerate(self.sample_rate)
             wav.writeframes(pcm.tobytes())
-        return duration if started_at is None else max(duration, time.monotonic() - started_at)
 
     def abort(self) -> None:
         with self._lock:

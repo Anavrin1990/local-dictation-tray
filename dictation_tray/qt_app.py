@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import html
 import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtCore import QObject, QPoint, QTimer, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QIcon, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSpinBox,
-    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .audio import MicrophoneRecorder
@@ -27,13 +28,187 @@ def application_icon() -> QIcon:
 class UiEvents(QObject):
     status = Signal(str)
     error = Signal(str)
+    recording_started = Signal()
+    live_text = Signal(str, str)
+    processing_started = Signal()
+    recording_finished = Signal(str, bool)
+
+
+class DictationOverlay(QWidget):
+    """Focus-safe, click-through live transcription bubble anchored near the pointer."""
+
+    def __init__(self, config: AppConfig):
+        flags = (
+            Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        super().__init__(None, flags)
+        self.setObjectName("dictationOverlay")
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFocusPolicy(Qt.NoFocus)
+
+        self.status_label = QLabel()
+        self.status_label.setFocusPolicy(Qt.NoFocus)
+        self.text = QTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setFocusPolicy(Qt.NoFocus)
+        self.text.setFrameStyle(0)
+        self.text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text.document().setDocumentMargin(0)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 11, 16, 13)
+        layout.setSpacing(6)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.text)
+
+        self.config = config
+        self.anchor = QPoint()
+        self.confirmed = ""
+        self.provisional = ""
+        self.apply_config(config)
+
+    def apply_config(self, config: AppConfig) -> None:
+        self.config = config
+        self.setStyleSheet(
+            f"""
+            QLabel {{
+                color: #73E2FF;
+                background: transparent;
+                border: none;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QTextEdit {{
+                color: {config.overlay_text_color};
+                background: transparent;
+                border: none;
+                font-size: 14px;
+                selection-background-color: transparent;
+            }}
+            """
+        )
+        self.update()
+        if self.isVisible():
+            self._render()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        background = QColor(self.config.overlay_background_color)
+        background.setAlpha(round(255 * self.config.overlay_opacity / 100))
+        border = QColor(132, 143, 255, 95)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(background)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 16, 16)
+        super().paintEvent(event)
+
+    def show_recording(self) -> None:
+        self.anchor = QCursor.pos()
+        self.confirmed = ""
+        self.provisional = ""
+        self.status_label.setText("●  Запись — говорите")
+        self._render("Слушаю…")
+        self.show()
+        self.raise_()
+        self._position_near_anchor()
+
+    def set_live_text(self, confirmed: str, provisional: str) -> None:
+        self.confirmed = confirmed
+        self.provisional = provisional
+        self.status_label.setText("●  Запись — говорите")
+        self._render()
+
+    def show_processing(self) -> None:
+        self.status_label.setText("◆  Уточняю текст и пунктуацию…")
+        self._render()
+
+    def show_finished(self, text: str, success: bool) -> None:
+        if success and text:
+            self.confirmed = text
+            self.provisional = ""
+            self.status_label.setText("✓  Текст вставлен")
+            self._render()
+            QTimer.singleShot(700, self.hide)
+        else:
+            self.hide()
+
+    def _render(self, placeholder: str = "") -> None:
+        confirmed = html.escape(self.confirmed)
+        provisional = html.escape(self.provisional)
+        if confirmed or provisional:
+            separator = " " if confirmed and provisional else ""
+            content = (
+                f'<span style="color:{self.config.overlay_text_color}">{confirmed}</span>'
+                f"{separator}"
+                f'<span style="color:{self.config.overlay_provisional_color}">{provisional}</span>'
+            )
+            plain_text = f"{self.confirmed}{separator}{self.provisional}"
+        else:
+            content = f'<span style="color:{self.config.overlay_provisional_color}">{html.escape(placeholder)}</span>'
+            plain_text = placeholder
+
+        self.text.setHtml(content)
+        natural_width = self.text.fontMetrics().horizontalAdvance(plain_text[-240:]) + 36
+        target_width = max(250, min(self.config.overlay_max_width, natural_width))
+        self.text.document().setTextWidth(max(1, target_width - 32))
+        document_height = int(self.text.document().size().height())
+        target_height = max(76, min(self.config.overlay_max_height, document_height + 52))
+        self.resize(target_width, target_height)
+        cursor = self.text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.text.setTextCursor(cursor)
+        self.text.ensureCursorVisible()
+        self._position_near_anchor()
+
+    def _position_near_anchor(self) -> None:
+        screen = QGuiApplication.screenAt(self.anchor) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        gap = 14
+        width, height = self.width(), self.height()
+        position = self.config.overlay_position
+
+        if position == "below":
+            x, y = self.anchor.x() - width // 2, self.anchor.y() + gap
+        elif position == "left":
+            x, y = self.anchor.x() - width - gap, self.anchor.y() - height // 2
+        elif position == "right":
+            x, y = self.anchor.x() + gap, self.anchor.y() - height // 2
+        else:
+            x, y = self.anchor.x() - width // 2, self.anchor.y() - height - gap
+
+        x += self.config.overlay_offset_x
+        y += self.config.overlay_offset_y
+
+        # Flip to the opposite side before clamping so the bubble stays near the pointer.
+        if position == "above" and y < available.top():
+            y = self.anchor.y() + gap + self.config.overlay_offset_y
+        elif position == "below" and y + height > available.bottom():
+            y = self.anchor.y() - height - gap + self.config.overlay_offset_y
+        elif position == "left" and x < available.left():
+            x = self.anchor.x() + gap + self.config.overlay_offset_x
+        elif position == "right" and x + width > available.right():
+            x = self.anchor.x() - width - gap + self.config.overlay_offset_x
+
+        x = min(max(x, available.left()), available.right() - width + 1)
+        y = min(max(y, available.top()), available.bottom() - height + 1)
+        self.move(x, y)
 
 
 class SettingsDialog(QDialog):
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
+        self.original_config = config
         self.setWindowTitle("Настройки локальной диктовки")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.hotkey = QLineEdit(config.hotkey)
@@ -60,14 +235,58 @@ class SettingsDialog(QDialog):
         self.history_limit = QSpinBox()
         self.history_limit.setRange(1, 100_000)
         self.history_limit.setValue(config.history_limit)
+        self.live_preview = QCheckBox("Показывать предварительный текст во время диктовки")
+        self.live_preview.setChecked(config.live_preview_enabled)
+        self.overlay_max_width = QSpinBox()
+        self.overlay_max_width.setRange(240, 1400)
+        self.overlay_max_width.setSuffix(" px")
+        self.overlay_max_width.setValue(config.overlay_max_width)
+        self.overlay_max_height = QSpinBox()
+        self.overlay_max_height.setRange(80, 900)
+        self.overlay_max_height.setSuffix(" px")
+        self.overlay_max_height.setValue(config.overlay_max_height)
+        self.overlay_position = QComboBox()
+        for label, value in (
+            ("Сверху от указателя", "above"),
+            ("Снизу от указателя", "below"),
+            ("Слева от указателя", "left"),
+            ("Справа от указателя", "right"),
+        ):
+            self.overlay_position.addItem(label, value)
+        self.overlay_position.setCurrentIndex(max(0, self.overlay_position.findData(config.overlay_position)))
+        self.overlay_offset_x = QSpinBox()
+        self.overlay_offset_x.setRange(-1000, 1000)
+        self.overlay_offset_x.setSuffix(" px")
+        self.overlay_offset_x.setValue(config.overlay_offset_x)
+        self.overlay_offset_y = QSpinBox()
+        self.overlay_offset_y.setRange(-1000, 1000)
+        self.overlay_offset_y.setSuffix(" px")
+        self.overlay_offset_y.setValue(config.overlay_offset_y)
+        self.overlay_opacity = QSpinBox()
+        self.overlay_opacity.setRange(20, 100)
+        self.overlay_opacity.setSuffix(" %")
+        self.overlay_opacity.setValue(config.overlay_opacity)
+        background_row, self.overlay_background_color = self._color_editor(config.overlay_background_color)
+        text_row, self.overlay_text_color = self._color_editor(config.overlay_text_color)
+        provisional_row, self.overlay_provisional_color = self._color_editor(config.overlay_provisional_color)
         form.addRow("Удерживаемая клавиша:", self.hotkey)
         form.addRow("Модель Whisper:", self.model)
         form.addRow("Язык:", self.language)
         form.addRow("Микрофон:", self.microphone)
         form.addRow("История (записей):", self.history_limit)
+        form.addRow("Максимальная ширина окна:", self.overlay_max_width)
+        form.addRow("Максимальная высота окна:", self.overlay_max_height)
+        form.addRow("Положение окна:", self.overlay_position)
+        form.addRow("Смещение по X:", self.overlay_offset_x)
+        form.addRow("Смещение по Y:", self.overlay_offset_y)
+        form.addRow("Цвет подложки:", background_row)
+        form.addRow("Цвет текста:", text_row)
+        form.addRow("Цвет предварительного текста:", provisional_row)
+        form.addRow("Непрозрачность подложки:", self.overlay_opacity)
         layout.addLayout(form)
         layout.addWidget(self.auto_paste)
         layout.addWidget(self.keep_recordings)
+        layout.addWidget(self.live_preview)
         note = QLabel("Модель загружается единожды при первом распознавании. Данные не отправляются в облако.")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -76,12 +295,49 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _color_editor(self, initial: str) -> tuple[QWidget, QLineEdit]:
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        field = QLineEdit(initial)
+        field.setMaxLength(7)
+        button = QPushButton("Выбрать…")
+
+        def update_preview(value: str) -> None:
+            color = QColor(value)
+            if color.isValid():
+                button.setStyleSheet(
+                    f"background:{color.name()}; color:{'#111111' if color.lightness() > 150 else '#FFFFFF'}"
+                )
+
+        def choose_color() -> None:
+            color = QColorDialog.getColor(QColor(field.text()), self, "Выберите цвет")
+            if color.isValid():
+                field.setText(color.name().upper())
+
+        field.textChanged.connect(update_preview)
+        button.clicked.connect(choose_color)
+        update_preview(initial)
+        row.addWidget(field)
+        row.addWidget(button)
+        return container, field
+
     def result_config(self) -> AppConfig:
         return AppConfig(
             hotkey=self.hotkey.text().strip().lower(), model=self.model.currentData(),
             language=self.language.currentData() or None, microphone=self.microphone.currentData(),
             auto_paste=self.auto_paste.isChecked(), keep_recordings=self.keep_recordings.isChecked(),
-            history_limit=self.history_limit.value(),
+            history_limit=self.history_limit.value(), sample_rate=self.original_config.sample_rate,
+            live_preview_enabled=self.live_preview.isChecked(),
+            overlay_max_width=self.overlay_max_width.value(),
+            overlay_max_height=self.overlay_max_height.value(),
+            overlay_position=self.overlay_position.currentData(),
+            overlay_offset_x=self.overlay_offset_x.value(),
+            overlay_offset_y=self.overlay_offset_y.value(),
+            overlay_background_color=self.overlay_background_color.text().strip().upper(),
+            overlay_text_color=self.overlay_text_color.text().strip().upper(),
+            overlay_provisional_color=self.overlay_provisional_color.text().strip().upper(),
+            overlay_opacity=self.overlay_opacity.value(),
         )
 
     def accept(self) -> None:
@@ -148,8 +404,22 @@ class TrayApplication(QObject):
         self.events = UiEvents()
         self.events.status.connect(self._show_status)
         self.events.error.connect(self._show_error)
+        self.overlay = DictationOverlay(self.config)
+        self.events.recording_started.connect(self.overlay.show_recording)
+        self.events.live_text.connect(self.overlay.set_live_text)
+        self.events.processing_started.connect(self.overlay.show_processing)
+        self.events.recording_finished.connect(self.overlay.show_finished)
         self.controller = DictationController(
-            self.config, history, recordings_dir, self.events.status.emit, self.events.error.emit, logger=logger
+            self.config,
+            history,
+            recordings_dir,
+            self.events.status.emit,
+            self.events.error.emit,
+            logger=logger,
+            on_recording_started=self.events.recording_started.emit,
+            on_live_text=self.events.live_text.emit,
+            on_processing_started=self.events.processing_started.emit,
+            on_recording_finished=self.events.recording_finished.emit,
         )
         self.tray = QSystemTrayIcon(application_icon(), self)
         self.tray.setToolTip("Локальная диктовка — готово")
@@ -207,11 +477,13 @@ class TrayApplication(QObject):
         try:
             self.hotkey.start()
             self.config_store.save(new_config)
+            self.overlay.apply_config(new_config)
             self._show_status(f"Настройки сохранены: {new_config.hotkey}")
         except RuntimeError as exc:
             self.hotkey.stop()
             self.config = self.config_store.load()
             self.controller.update_config(self.config)
+            self.overlay.apply_config(self.config)
             self.hotkey = self._make_hotkey()
             try:
                 self.hotkey.start()
@@ -232,5 +504,6 @@ class TrayApplication(QObject):
     def quit(self) -> None:
         self.hotkey.stop()
         self.controller.shutdown()
+        self.overlay.hide()
         self.tray.hide()
         self.app.quit()
