@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.3.0",
     [string]$EntryPoint,
     [string]$AppName = "Local Dictation",
     [string]$AppExeName = "LocalDictationTray.exe",
-    [string]$ModelRepository = "Systran/faster-whisper-base",
+    [string]$ModelRepository = "Systran/faster-whisper-small",
     [string]$ModelDirectory,
     [string]$InnoCompiler,
     [switch]$Offline,
@@ -17,11 +17,17 @@ $buildRoot = Join-Path $projectRoot ".build"
 $distRoot = Join-Path $projectRoot "dist"
 $distDir = Join-Path $distRoot "LocalDictationTray"
 $installerOutput = Join-Path $projectRoot "dist-installer"
-$modelRoot = if ($ModelDirectory) { $ModelDirectory } else { Join-Path $projectRoot "assets\models\faster-whisper-base" }
+$modelRoot = if ($ModelDirectory) { $ModelDirectory } else { Join-Path $projectRoot "assets\models\faster-whisper-small" }
 $iconPath = Join-Path $projectRoot "assets\tray-icon.ico"
 
 function Find-Python {
     $candidates = @(@("py", "-3.12"), @("py", "-3.11"), @("python", ""))
+    # An offline rebuild may intentionally have no Python launcher installed;
+    # reuse the already prepared isolated 3.11/3.12 environment in that case.
+    foreach ($version in @("3.12", "3.11")) {
+        $existing = Join-Path $projectRoot (".build\\packaging-venv-" + $version + "\\Scripts\\python.exe")
+        if (Test-Path -LiteralPath $existing -PathType Leaf) { $candidates += ,@($existing, "") }
+    }
     foreach ($candidate in $candidates) {
         try {
             if ($candidate[1]) { $versionOutput = & $candidate[0] $candidate[1] --version 2>&1 } else { $versionOutput = & $candidate[0] --version 2>&1 }
@@ -88,16 +94,17 @@ $pyInstallerArgs = @(
     "--noconfirm", "--clean", "--onedir", "--windowed", "--name", "LocalDictationTray",
     "--distpath", $distRoot, "--workpath", (Join-Path $buildRoot "pyinstaller-work"),
     "--specpath", (Join-Path $buildRoot "pyinstaller-spec"), "--paths", $projectRoot,
-    "--runtime-hook", $hookPath, "--add-data", "$modelRoot;models\faster-whisper-base",
+    "--runtime-hook", $hookPath, "--add-data", "$modelRoot;models\faster-whisper-small",
     "--add-data", "$iconPath;assets", "--icon", $iconPath,
     "--collect-all", "faster_whisper", "--collect-all", "ctranslate2", "--collect-all", "av",
-    "--collect-all", "PySide6", "--hidden-import", "sounddevice", "--hidden-import", "keyboard",
+    "--collect-all", "nvidia.cublas", "--collect-all", "nvidia.cudnn",
+    "--hidden-import", "sounddevice", "--hidden-import", "keyboard",
     "--hidden-import", "pyperclip", $EntryPoint
 )
 & $venvPython -m PyInstaller @pyInstallerArgs
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with code $LASTEXITCODE" }
 
-& (Join-Path $PSScriptRoot "test-package.ps1") -DistDir $distDir -AppExeName $AppExeName -RunSelfCheck:(-not $SkipSelfCheck)
+& (Join-Path $PSScriptRoot "test-package.ps1") -DistDir $distDir -AppExeName $AppExeName -RunSelfCheck:(-not $SkipSelfCheck) -RunGpuSelfCheck:(-not $SkipSelfCheck)
 
 $iscc = Find-InnoCompiler $InnoCompiler
 $issPath = Join-Path $projectRoot "packaging\installer.iss"

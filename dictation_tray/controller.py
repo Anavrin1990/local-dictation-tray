@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from collections.abc import Callable
@@ -35,6 +36,14 @@ class DictationController:
         on_recording_finished: Callable[[str, bool], None] | None = None,
         live_interval_seconds: float = 1.1,
     ):
+        # Resolve the initial device without loading the Whisper model. Settings
+        # only expose explicit CPU/GPU choices; unavailable CUDA becomes CPU.
+        if config.execution_device == "cuda":
+            detected = LocalWhisperTranscriber.detect_execution_device()
+            if detected != "cuda":
+                config = replace(config, execution_device="cpu")
+                self._logger = logger or logging.getLogger("dictation_tray")
+                self._logger.info("CUDA device not found at startup; selected CPU")
         self.config, self.history, self.recordings_dir = config, history, recordings_dir
         self._status, self._error, self._paste = status, error, paste
         self._recorder_factory, self._transcriber_factory = recorder_factory, transcriber_factory
@@ -51,6 +60,7 @@ class DictationController:
         self._target_window: int | None = None
         self._live_stop = threading.Event()
         self._live_thread: threading.Thread | None = None
+        self._unload_timer: threading.Timer | None = None
 
     @property
     def state(self) -> DictationState:
@@ -58,6 +68,7 @@ class DictationController:
             return self._state
 
     def begin(self) -> bool:
+        self._cancel_unload_timer()
         with self._lock:
             if self._state is not DictationState.IDLE:
                 return False
@@ -108,7 +119,17 @@ class DictationController:
             if duration < 0.15:
                 self._status("Слишком короткая запись")
                 return
-            text, language = self._get_transcriber().transcribe(wav_path)
+            transcriber = self._get_transcriber()
+            text, language = transcriber.transcribe(wav_path)
+            fallback_error = getattr(transcriber, "fallback_error", None)
+            effective_device = getattr(transcriber, "effective_device", None)
+            if fallback_error:
+                self._status("GPU NVIDIA недоступен — распознавание на CPU")
+                self._logger.warning("Whisper GPU fallback shown to user: %s", fallback_error)
+            elif effective_device == "cuda":
+                self._status("Распознавание: GPU NVIDIA (CUDA float16)")
+            elif effective_device == "cpu":
+                self._status("Распознавание: CPU (int8)")
             if not text:
                 self._status("Речь не распознана")
                 return
@@ -138,6 +159,7 @@ class DictationController:
                 self._state = DictationState.IDLE
                 self._target_window = None
             self._on_recording_finished(final_text, success)
+            self._schedule_engine_unload()
 
     def _live_worker(self, recorder: MicrophoneRecorder) -> None:
         """Transcribe growing speech segments while recording; the final pass remains authoritative."""
@@ -178,23 +200,79 @@ class DictationController:
     def _get_transcriber(self) -> LocalWhisperTranscriber:
         with self._lock:
             if self._transcriber is None:
-                self._transcriber = self._transcriber_factory(self.config.model, self.config.language)
+                self._transcriber = self._transcriber_factory(
+                    self.config.model, self.config.language, self.config.execution_device, self._logger,
+                )
             return self._transcriber
 
-    def update_config(self, config: AppConfig) -> None:
-        """Apply persisted settings and discard the cache only if its model changed."""
+    def _cancel_unload_timer(self) -> None:
         with self._lock:
-            changed_model = (self.config.model, self.config.language) != (config.model, config.language)
+            timer, self._unload_timer = self._unload_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_engine_unload(self) -> None:
+        if self.config.unload_model_immediately:
+            delay_seconds = 0.0
+        elif self.config.model_idle_unload_minutes:
+            delay_seconds = self.config.model_idle_unload_minutes * 60.0
+        else:
+            return
+        self._cancel_unload_timer()
+        timer = threading.Timer(delay_seconds, self._unload_engine_if_idle)
+        timer.daemon = True
+        with self._lock:
+            self._unload_timer = timer
+        timer.start()
+
+    def _unload_engine_if_idle(self) -> None:
+        """Do not release a model while a preview/final worker can still use it."""
+        with self._lock:
+            live_running = self._live_thread is not None and self._live_thread.is_alive()
+            if self._state is not DictationState.IDLE or live_running:
+                # A preview worker is normally exiting after finish; retry briefly.
+                timer = threading.Timer(0.25, self._unload_engine_if_idle)
+                timer.daemon = True
+                self._unload_timer = timer
+                timer.start()
+                return
+            transcriber, self._transcriber = self._transcriber, None
+            self._unload_timer = None
+        if transcriber is not None:
+            unload = getattr(transcriber, "unload", None)
+            if callable(unload):
+                unload()
+            self._logger.info("Whisper engine released after idle period")
+
+    def update_config(self, config: AppConfig) -> None:
+        """Apply persisted settings and discard the model when its runtime changes."""
+        with self._lock:
+            changed_model = (self.config.model, self.config.language, self.config.execution_device) != (
+                config.model, config.language, config.execution_device,
+            )
             self.config = config
             if changed_model:
-                self._transcriber = None
+                previous, self._transcriber = self._transcriber, None
+            else:
+                previous = None
+        if previous is not None:
+            unload = getattr(previous, "unload", None)
+            if callable(unload):
+                unload()
+        self._cancel_unload_timer()
 
     def shutdown(self) -> None:
         self._live_stop.set()
+        self._cancel_unload_timer()
         with self._lock:
             recorder, self._recorder = self._recorder, None
+            transcriber, self._transcriber = self._transcriber, None
             self._state = DictationState.IDLE
             self._target_window = None
         if recorder is not None:
             recorder.abort()
+        if transcriber is not None:
+            unload = getattr(transcriber, "unload", None)
+            if callable(unload):
+                unload()
         self._on_recording_finished("", False)

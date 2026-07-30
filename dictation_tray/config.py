@@ -11,7 +11,10 @@ from pathlib import Path
 @dataclass(slots=True)
 class AppConfig:
     hotkey: str = "ctrl+alt"
-    model: str = "base"
+    # Only this locally bundled model is supported; legacy `base` configs migrate on load.
+    model: str = "small"
+    # The initial value is resolved to CUDA or CPU during tray startup.
+    execution_device: str = "cuda"
     language: str = "ru"
     microphone: str | None = None
     sample_rate: int = 16000
@@ -28,8 +31,17 @@ class AppConfig:
     overlay_text_color: str = "#F7F7FF"
     overlay_provisional_color: str = "#AEB4D0"
     overlay_opacity: int = 88
+    # 0 means keep the engine resident until the application exits.
+    model_idle_unload_minutes: int = 10
+    unload_model_immediately: bool = False
 
     def validate(self) -> None:
+        if self.model != "small":
+            raise ValueError("Only the bundled Whisper small model is supported")
+        if self.execution_device not in {"cuda", "cpu"}:
+            raise ValueError("Execution device must be cuda or cpu")
+        if self.model_idle_unload_minutes not in {0, 5, 10, 30}:
+            raise ValueError("Model idle unload timeout must be 0, 5, 10, or 30 minutes")
         if not self.hotkey or not self.hotkey.strip():
             raise ValueError("Горячая клавиша не может быть пустой")
         if self.sample_rate not in (8000, 16000, 22050, 44100, 48000):
@@ -70,6 +82,12 @@ class ConfigStore:
             # v0.1.1 changes the original default chord while preserving custom hotkeys.
             if values.get("hotkey") == "ctrl+alt+space":
                 values["hotkey"] = "ctrl+alt"
+            if values.get("model") in {None, "base"}:
+                values["model"] = "small"
+            # v0.3 removes the ambiguous automatic mode. The controller chooses a
+            # concrete CUDA/CPU mode when the application starts.
+            if values.get("execution_device") == "auto":
+                values["execution_device"] = "cuda"
             config = AppConfig(**values)
             config.validate()
             return config

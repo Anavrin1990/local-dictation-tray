@@ -6,11 +6,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from dictation_tray.audio import AudioSnapshot
 from dictation_tray.config import AppConfig
 from dictation_tray.controller import DictationController, DictationState
 from dictation_tray.history import HistoryRepository
+from dictation_tray.transcriber import LocalWhisperTranscriber
 
 
 class FakeRecorder:
@@ -43,6 +45,9 @@ class FakeTranscriber:
         if self.error:
             raise self.error
         return self.text, "ru"
+
+    def unload(self) -> None:
+        self.unloaded = getattr(self, "unloaded", 0) + 1
 
 
 class LiveFakeRecorder(FakeRecorder):
@@ -176,6 +181,45 @@ class ControllerTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(controller.state, DictationState.IDLE)
         self.assertEqual(len(calls), 1)
+
+    def test_immediate_engine_unload_releases_cached_transcriber_after_final_pass(self) -> None:
+        recorder = FakeRecorder(16000, None)
+        transcriber = FakeTranscriber()
+        controller = self.controller(recorder, transcriber, unload_model_immediately=True)
+
+        self.assertTrue(controller.begin())
+        controller.finish()
+        self.assertTrue(self.done.wait(2))
+        deadline = time.monotonic() + 2
+        while controller._transcriber is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(transcriber.unloaded, 1)
+        self.assertIsNone(controller._transcriber)
+
+    def test_idle_engine_unload_is_disabled_when_timeout_is_never(self) -> None:
+        recorder = FakeRecorder(16000, None)
+        transcriber = FakeTranscriber()
+        controller = self.controller(recorder, transcriber, model_idle_unload_minutes=0)
+
+        self.assertTrue(controller.begin())
+        controller.finish()
+        self.assertTrue(self.done.wait(2))
+        time.sleep(0.05)
+        self.assertIs(controller._transcriber, transcriber)
+        self.assertFalse(hasattr(transcriber, "unloaded"))
+
+    def test_startup_resolves_unavailable_cuda_to_cpu_without_creating_model(self) -> None:
+        with patch.object(LocalWhisperTranscriber, "detect_execution_device", return_value="cpu"):
+            controller = DictationController(
+                AppConfig(execution_device="cuda"),
+                HistoryRepository(self.root / "history.sqlite3"),
+                self.root / "recordings",
+                self.statuses.append,
+                self.errors.append,
+            )
+        self.assertEqual(controller.config.execution_device, "cpu")
+        self.assertIsNone(controller._transcriber)
 
     def test_live_preview_is_replaced_by_final_full_transcription(self) -> None:
         recorder = LiveFakeRecorder(16000, None)

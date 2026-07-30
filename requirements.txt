@@ -1,5 +1,8 @@
 PySide6>=6.7,<7
-faster-whisper>=1.1,<2
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==8.9.7.29
 sounddevice>=0.5,<1
 numpy>=1.26,<3
 keyboard>=0.13,<1

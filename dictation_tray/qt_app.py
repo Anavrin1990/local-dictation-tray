@@ -204,7 +204,7 @@ class DictationOverlay(QWidget):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: AppConfig, parent=None):
+    def __init__(self, config: AppConfig, parent=None, on_open_logs=None, active_execution_device: str | None = None):
         super().__init__(parent)
         self.original_config = config
         self.setWindowTitle("Настройки локальной диктовки")
@@ -215,7 +215,22 @@ class SettingsDialog(QDialog):
         self.hotkey.setPlaceholderText("Например: ctrl+alt")
         self.model = QComboBox()
         # The installer bundles this model, so the application remains offline after installation.
-        self.model.addItem("base (встроенная, локальная)", "base")
+        self.model.addItem("small (встроенная, локальная)", "small")
+        self.model.setEnabled(False)
+        self.execution_device = QComboBox()
+        self.execution_device.addItem("GPU NVIDIA", "cuda")
+        self.execution_device.addItem("CPU", "cpu")
+        self.execution_device.setCurrentIndex(max(0, self.execution_device.findData(config.execution_device)))
+        self.model_idle_unload_minutes = QComboBox()
+        self.model_idle_unload_minutes.addItem("Не выгружать", 0)
+        self.model_idle_unload_minutes.addItem("Через 5 минут", 5)
+        self.model_idle_unload_minutes.addItem("Через 10 минут", 10)
+        self.model_idle_unload_minutes.addItem("Через 30 минут", 30)
+        self.model_idle_unload_minutes.setCurrentIndex(
+            max(0, self.model_idle_unload_minutes.findData(config.model_idle_unload_minutes))
+        )
+        self.unload_model_immediately = QCheckBox("Освобождать память сразу после распознавания")
+        self.unload_model_immediately.setChecked(config.unload_model_immediately)
         self.language = QComboBox()
         self.language.addItem("Автоопределение", "")
         self.language.addItem("Русский", "ru")
@@ -271,6 +286,9 @@ class SettingsDialog(QDialog):
         provisional_row, self.overlay_provisional_color = self._color_editor(config.overlay_provisional_color)
         form.addRow("Удерживаемая клавиша:", self.hotkey)
         form.addRow("Модель Whisper:", self.model)
+        form.addRow("Текущий активный режим:", QLabel(self._device_label(active_execution_device or config.execution_device)))
+        form.addRow("Устройство распознавания:", self.execution_device)
+        form.addRow("Освобождать модель после простоя:", self.model_idle_unload_minutes)
         form.addRow("Язык:", self.language)
         form.addRow("Микрофон:", self.microphone)
         form.addRow("История (записей):", self.history_limit)
@@ -287,13 +305,23 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.auto_paste)
         layout.addWidget(self.keep_recordings)
         layout.addWidget(self.live_preview)
+        layout.addWidget(self.unload_model_immediately)
         note = QLabel("Модель загружается единожды при первом распознавании. Данные не отправляются в облако.")
         note.setWordWrap(True)
         layout.addWidget(note)
+        logs_button = QPushButton("Открыть папку логов")
+        logs_button.setEnabled(on_open_logs is not None)
+        if on_open_logs is not None:
+            logs_button.clicked.connect(on_open_logs)
+        layout.addWidget(logs_button)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @staticmethod
+    def _device_label(device: str) -> str:
+        return "GPU NVIDIA" if device == "cuda" else "CPU"
 
     def _color_editor(self, initial: str) -> tuple[QWidget, QLineEdit]:
         container = QWidget()
@@ -325,6 +353,7 @@ class SettingsDialog(QDialog):
     def result_config(self) -> AppConfig:
         return AppConfig(
             hotkey=self.hotkey.text().strip().lower(), model=self.model.currentData(),
+            execution_device=self.execution_device.currentData(),
             language=self.language.currentData() or None, microphone=self.microphone.currentData(),
             auto_paste=self.auto_paste.isChecked(), keep_recordings=self.keep_recordings.isChecked(),
             history_limit=self.history_limit.value(), sample_rate=self.original_config.sample_rate,
@@ -338,6 +367,8 @@ class SettingsDialog(QDialog):
             overlay_text_color=self.overlay_text_color.text().strip().upper(),
             overlay_provisional_color=self.overlay_provisional_color.text().strip().upper(),
             overlay_opacity=self.overlay_opacity.value(),
+            model_idle_unload_minutes=self.model_idle_unload_minutes.currentData(),
+            unload_model_immediately=self.unload_model_immediately.isChecked(),
         )
 
     def accept(self) -> None:
@@ -421,12 +452,17 @@ class TrayApplication(QObject):
             on_processing_started=self.events.processing_started.emit,
             on_recording_finished=self.events.recording_finished.emit,
         )
+        self.config = self.controller.config
+        self._active_execution_device = self.controller.config.execution_device
         self.tray = QSystemTrayIcon(application_icon(), self)
         self.tray.setToolTip("Локальная диктовка — готово")
         self.menu = QMenu()
         self.status_action = QAction("Готово: удерживайте Ctrl+Alt", self.menu)
         self.status_action.setEnabled(False)
         self.menu.addAction(self.status_action)
+        self.runtime_action = QAction(self._runtime_status_text(), self.menu)
+        self.runtime_action.setEnabled(False)
+        self.menu.addAction(self.runtime_action)
         self.menu.addSeparator()
         self.menu.addAction("Настройки…", self.show_settings)
         self.menu.addAction("История…", self.show_history)
@@ -455,6 +491,10 @@ class TrayApplication(QObject):
             self.show_settings()
 
     def _show_status(self, message: str) -> None:
+        if "GPU NVIDIA недоступен" in message or "Распознавание: CPU" in message:
+            self._set_active_execution_device("cpu")
+        elif "Распознавание: GPU NVIDIA" in message:
+            self._set_active_execution_device("cuda")
         self.status_action.setText(message)
         self.tray.setToolTip(f"Локальная диктовка — {message}")
         self.tray.showMessage("Локальная диктовка", message, QSystemTrayIcon.Information, 2500)
@@ -464,8 +504,20 @@ class TrayApplication(QObject):
         self.status_action.setText("Ошибка — откройте настройки или логи")
         self.tray.showMessage("Локальная диктовка", message, QSystemTrayIcon.Critical, 7000)
 
+    def _runtime_status_text(self) -> str:
+        label = "GPU NVIDIA" if self._active_execution_device == "cuda" else "CPU"
+        return f"Режим распознавания: {label}"
+
+    def _set_active_execution_device(self, device: str) -> None:
+        self._active_execution_device = device
+        self.runtime_action.setText(self._runtime_status_text())
+
     def show_settings(self) -> None:
-        dialog = SettingsDialog(self.config)
+        dialog = SettingsDialog(
+            self.config,
+            on_open_logs=self.open_logs,
+            active_execution_device=self._active_execution_device,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
         new_config = dialog.result_config()
@@ -473,10 +525,12 @@ class TrayApplication(QObject):
         old_hotkey.stop()
         self.config = new_config
         self.controller.update_config(new_config)
+        self._set_active_execution_device(new_config.execution_device)
         self.hotkey = self._make_hotkey()
         try:
             self.hotkey.start()
             self.config_store.save(new_config)
+            self.history.trim_to_limit(new_config.history_limit)
             self.overlay.apply_config(new_config)
             self._show_status(f"Настройки сохранены: {new_config.hotkey}")
         except RuntimeError as exc:

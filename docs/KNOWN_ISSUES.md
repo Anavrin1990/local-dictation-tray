@@ -17,7 +17,8 @@ When the workspace is mounted under a different Windows SID, Git can reject stat
 On machines whose execution policy blocks local `.ps1` files, invoke the checks without changing the global policy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-packaging-scripts.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\test-package.ps1 -RunSelfCheck -RunGpuSelfCheck
+powershell -ExecutionPolicy Bypass -File .\scripts\test-installer.ps1 -InstallerPath .\dist-installer\LocalDictationTray-0.3.0-Setup.exe
 ```
 
 ## Packaged self-check returns code 2 in a restricted sandbox
@@ -27,3 +28,10 @@ directory. A restricted build sandbox may deny that profile path and return code
 2 even when the package is valid. Re-run `scripts\test-package.ps1 -RunSelfCheck`
 with access to the real user `%APPDATA%`; do not weaken the application data path
 or disable the check.
+# GPU/runtime notes
+
+- `--self-check` deliberately does not open `app.log`: an already-running Windows tray
+  process may hold that file with exclusive sharing.  Check the log directory instead.
+- Some Codex/sandbox Windows sessions expose duplicate `Path`/`PATH` environment keys.
+  `Start-Process` then fails before creating a child. Run long local builds directly (or
+  normalize the environment in a normal PowerShell session).

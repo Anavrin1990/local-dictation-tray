@@ -31,6 +31,34 @@ class TrayUiContractTests(unittest.TestCase):
         self.assertIn("self.hotkey.stop()", source)
         self.assertIn("self.controller.shutdown()", source)
 
+    def test_settings_expose_a_logs_folder_button(self) -> None:
+        source = (ROOT / "dictation_tray/qt_app.py").read_text(encoding="utf-8")
+        self.assertIn('QPushButton("Открыть папку логов")', source)
+        self.assertIn("on_open_logs=self.open_logs", source)
+
+    def test_settings_expose_explicit_engine_and_memory_controls(self) -> None:
+        source = (ROOT / "dictation_tray/qt_app.py").read_text(encoding="utf-8")
+        self.assertNotIn('addItem("Авто (рекомендуется)", "auto")', source)
+        for value in (
+            'addItem("GPU NVIDIA", "cuda")',
+            'addItem("CPU", "cpu")',
+            'addItem("Не выгружать", 0)',
+            'addItem("Через 5 минут", 5)',
+            'addItem("Через 10 минут", 10)',
+            'addItem("Через 30 минут", 30)',
+            'QCheckBox("Освобождать память сразу после распознавания")',
+            "model_idle_unload_minutes=self.model_idle_unload_minutes.currentData()",
+            "unload_model_immediately=self.unload_model_immediately.isChecked()",
+            "Текущий активный режим:",
+        ):
+            self.assertIn(value, source)
+
+    def test_tray_keeps_an_explicit_active_engine_status(self) -> None:
+        source = (ROOT / "dictation_tray/qt_app.py").read_text(encoding="utf-8")
+        self.assertIn("self.runtime_action", source)
+        self.assertIn("GPU NVIDIA недоступен", source)
+        self.assertIn("Режим распознавания:", source)
+
     def test_custom_microphone_icon_is_used_by_app_and_packaging(self) -> None:
         source = (ROOT / "dictation_tray" / "qt_app.py").read_text(encoding="utf-8")
         build = (ROOT / "scripts" / "build-installer.ps1").read_text(encoding="utf-8")

@@ -93,6 +93,16 @@ class HistoryRepositoryTests(unittest.TestCase):
         self.assertEqual([entry.text for entry in recent], ["three", "two"])
         self.assertEqual(recent[0].id, newest.id)
 
+    def test_reducing_configured_limit_removes_existing_old_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repository = HistoryRepository(Path(temp) / "history.sqlite3")
+            for number in range(4):
+                repository.add(f"entry {number}", 1, "ru", limit=10)
+            repository.trim_to_limit(2)
+            recent = repository.list_recent(10)
+
+        self.assertEqual([entry.text for entry in recent], ["entry 3", "entry 2"])
+
     def test_invalid_history_limit_is_rejected_at_storage_boundary(self) -> None:
         """Storage must not silently discard the just-transcribed text on a bad setting."""
         with tempfile.TemporaryDirectory() as temp:
@@ -100,6 +110,12 @@ class HistoryRepositoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 repository.add("important dictation", 1, "ru", limit=0)
             self.assertEqual(repository.list_recent(), [])
+
+    def test_invalid_history_trim_limit_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repository = HistoryRepository(Path(temp) / "history.sqlite3")
+            with self.assertRaises(ValueError):
+                repository.trim_to_limit(0)
 
     def test_empty_dictation_is_not_persisted_and_delete_all_works(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

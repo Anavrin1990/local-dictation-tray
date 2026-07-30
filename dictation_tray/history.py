@@ -45,8 +45,7 @@ class HistoryRepository:
         normalized = " ".join(text.split())
         if not normalized:
             raise ValueError("Нельзя сохранить пустую диктовку")
-        if limit < 1:
-            raise ValueError("Лимит истории должен быть положительным")
+        self._validate_limit(limit)
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with closing(self._connect()) as connection:
             with connection:
@@ -54,11 +53,27 @@ class HistoryRepository:
                     "INSERT INTO dictations(created_at, text, duration_seconds, language) VALUES (?, ?, ?, ?)",
                     (created_at, normalized, duration_seconds, language),
                 )
-                connection.execute(
-                    "DELETE FROM dictations WHERE id NOT IN (SELECT id FROM dictations ORDER BY id DESC LIMIT ?)",
-                    (limit,),
-                )
+                self._trim_connection(connection, limit)
         return HistoryEntry(cursor.lastrowid, created_at, normalized, duration_seconds, language)
+
+    def trim_to_limit(self, limit: int) -> None:
+        """Immediately apply a newly saved history limit to existing entries."""
+        self._validate_limit(limit)
+        with closing(self._connect()) as connection:
+            with connection:
+                self._trim_connection(connection, limit)
+
+    @staticmethod
+    def _validate_limit(limit: int) -> None:
+        if limit < 1:
+            raise ValueError("Лимит истории должен быть положительным")
+
+    @staticmethod
+    def _trim_connection(connection: sqlite3.Connection, limit: int) -> None:
+        connection.execute(
+            "DELETE FROM dictations WHERE id NOT IN (SELECT id FROM dictations ORDER BY id DESC LIMIT ?)",
+            (limit,),
+        )
 
     def list_recent(self, limit: int = 200) -> list[HistoryEntry]:
         with closing(self._connect()) as connection:
