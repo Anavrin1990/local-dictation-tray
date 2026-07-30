@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from . import __version__
 from .audio import MicrophoneRecorder
 from .config import AppConfig, ConfigStore
 from .controller import DictationController
@@ -286,6 +287,7 @@ class SettingsDialog(QDialog):
         provisional_row, self.overlay_provisional_color = self._color_editor(config.overlay_provisional_color)
         form.addRow("Удерживаемая клавиша:", self.hotkey)
         form.addRow("Модель Whisper:", self.model)
+        form.addRow("Версия:", QLabel(__version__))
         form.addRow("Текущий активный режим:", QLabel(self._device_label(active_execution_device or config.execution_device)))
         form.addRow("Устройство распознавания:", self.execution_device)
         form.addRow("Освобождать модель после простоя:", self.model_idle_unload_minutes)

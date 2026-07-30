@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+import ctypes
+import gc
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
+
+
+def trim_process_working_set() -> bool:
+    """Ask Windows to return unused physical pages; intentionally a no-op elsewhere."""
+    if sys.platform != "win32":
+        return False
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetProcessWorkingSetSize.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t)
+        kernel32.SetProcessWorkingSetSize.restype = ctypes.c_bool
+        process = kernel32.GetCurrentProcess()
+        trim = ctypes.c_size_t(-1).value
+        return bool(kernel32.SetProcessWorkingSetSize(process, trim, trim))
+    except (AttributeError, OSError):
+        return False
 
 
 class LocalWhisperTranscriber:
@@ -111,6 +130,11 @@ class LocalWhisperTranscriber:
             "fallback_error": self.fallback_error,
         }
 
+    def prepare(self) -> None:
+        """Load the selected runtime early so the first live preview is not late."""
+        with self._transcribe_lock:
+            self._get_model()
+
     def unload(self) -> bool:
         """Release the model safely after all preview/final work has completed."""
         # Keep the lock order identical to transcribe(): transcribe -> model.
@@ -118,6 +142,7 @@ class LocalWhisperTranscriber:
             with self._model_lock:
                 if self._model is None:
                     return False
+                model = self._model
                 self._model = None
                 self._logger.info(
                     "Whisper runtime unloaded: effective_device=%s compute_type=%s",
@@ -126,7 +151,13 @@ class LocalWhisperTranscriber:
                 )
                 self.effective_device = None
                 self.effective_compute_type = None
-                return True
+            # CTranslate2 releases its model when the final Python reference is
+            # gone.  Collect before trimming so Windows can reclaim unused pages.
+            del model
+            gc.collect()
+            trimmed = trim_process_working_set()
+            self._logger.debug("Whisper runtime memory cleanup completed: working_set_trimmed=%s", trimmed)
+            return True
 
     def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
         # CTranslate2 instances are shared by preview/final workers; CUDA failure

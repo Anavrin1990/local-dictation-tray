@@ -44,6 +44,7 @@ class GpuRuntimeTests(unittest.TestCase):
     def test_config_defaults_migrates_base_and_validates_execution_modes(self) -> None:
         self.assertEqual(AppConfig().model, "small")
         self.assertEqual(AppConfig().execution_device, "cuda")
+        self.assertTrue(AppConfig().unload_model_immediately)
         for mode in ("cuda", "cpu"):
             AppConfig(execution_device=mode).validate()
         with self.assertRaises(ValueError):
@@ -91,6 +92,32 @@ class GpuRuntimeTests(unittest.TestCase):
                     LocalWhisperTranscriber("small", execution_device="cpu").transcribe(Path("audio.wav"))
         self.assertEqual([call[1]["device"] for call in calls], ["cpu"])
         self.assertEqual(calls[0][1]["compute_type"], "int8")
+
+    def test_unload_releases_python_references_collects_gc_and_trims_working_set(self) -> None:
+        transcriber = LocalWhisperTranscriber("small", execution_device="cpu")
+        transcriber._model = object()
+        transcriber.effective_device = "cpu"
+        transcriber.effective_compute_type = "int8"
+
+        with patch("dictation_tray.transcriber.gc.collect") as collect, patch(
+            "dictation_tray.transcriber.trim_process_working_set"
+        ) as trim:
+            self.assertTrue(transcriber.unload())
+
+        self.assertIsNone(transcriber._model)
+        self.assertIsNone(transcriber.effective_device)
+        self.assertIsNone(transcriber.effective_compute_type)
+        collect.assert_called_once_with()
+        trim.assert_called_once_with()
+
+    def test_unload_without_a_loaded_model_does_not_trim_process_memory(self) -> None:
+        transcriber = LocalWhisperTranscriber("small", execution_device="cpu")
+        with patch("dictation_tray.transcriber.gc.collect") as collect, patch(
+            "dictation_tray.transcriber.trim_process_working_set"
+        ) as trim:
+            self.assertFalse(transcriber.unload())
+        collect.assert_not_called()
+        trim.assert_not_called()
 
     def test_cuda_inference_failure_retries_once_on_cpu(self) -> None:
         module, calls = self._model_module({"infer-cuda": RuntimeError("CUDA execution failed")})

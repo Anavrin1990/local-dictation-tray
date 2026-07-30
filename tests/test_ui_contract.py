@@ -36,6 +36,11 @@ class TrayUiContractTests(unittest.TestCase):
         self.assertIn('QPushButton("Открыть папку логов")', source)
         self.assertIn("on_open_logs=self.open_logs", source)
 
+    def test_settings_show_application_version(self) -> None:
+        source = (ROOT / "dictation_tray" / "qt_app.py").read_text(encoding="utf-8")
+        self.assertIn("from . import __version__", source)
+        self.assertIn('form.addRow("Версия:", QLabel(__version__))', source)
+
     def test_settings_expose_explicit_engine_and_memory_controls(self) -> None:
         source = (ROOT / "dictation_tray/qt_app.py").read_text(encoding="utf-8")
         self.assertNotIn('addItem("Авто (рекомендуется)", "auto")', source)

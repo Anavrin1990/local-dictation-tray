@@ -49,6 +49,9 @@ class FakeTranscriber:
     def unload(self) -> None:
         self.unloaded = getattr(self, "unloaded", 0) + 1
 
+    def prepare(self) -> None:
+        self.prepared = getattr(self, "prepared", 0) + 1
+
 
 class LiveFakeRecorder(FakeRecorder):
     def snapshot_to_wav(self, output: Path, start_frame: int = 0) -> AudioSnapshot:
@@ -167,7 +170,7 @@ class ControllerTests(unittest.TestCase):
             return item
 
         controller = DictationController(
-            AppConfig(), HistoryRepository(self.root / "history.sqlite3"), self.root / "recordings",
+            AppConfig(unload_model_immediately=False, model_idle_unload_minutes=0), HistoryRepository(self.root / "history.sqlite3"), self.root / "recordings",
             self.statuses.append, self.errors.append,
             recorder_factory=lambda *_: FakeRecorder(16000, None),
             transcriber_factory=transcriber_factory,
@@ -197,10 +200,24 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(transcriber.unloaded, 1)
         self.assertIsNone(controller._transcriber)
 
+    def test_begin_prepares_model_for_first_live_preview(self) -> None:
+        recorder = LiveFakeRecorder(16000, None)
+        transcriber = FakeTranscriber()
+        controller = self.controller(recorder, transcriber)
+
+        self.assertTrue(controller.begin())
+        deadline = time.monotonic() + 2
+        while not hasattr(transcriber, "prepared") and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(transcriber.prepared, 1)
+        controller.finish()
+        self.assertTrue(self.done.wait(2))
+
     def test_idle_engine_unload_is_disabled_when_timeout_is_never(self) -> None:
         recorder = FakeRecorder(16000, None)
         transcriber = FakeTranscriber()
-        controller = self.controller(recorder, transcriber, model_idle_unload_minutes=0)
+        controller = self.controller(recorder, transcriber, model_idle_unload_minutes=0, unload_model_immediately=False)
 
         self.assertTrue(controller.begin())
         controller.finish()

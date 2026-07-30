@@ -33,7 +33,7 @@ class AppConfig:
     overlay_opacity: int = 88
     # 0 means keep the engine resident until the application exits.
     model_idle_unload_minutes: int = 10
-    unload_model_immediately: bool = False
+    unload_model_immediately: bool = True
 
     def validate(self) -> None:
         if self.model != "small":
@@ -88,6 +88,10 @@ class ConfigStore:
             # concrete CUDA/CPU mode when the application starts.
             if values.get("execution_device") == "auto":
                 values["execution_device"] = "cuda"
+            # v0.3.1 changes the default memory policy. Older configuration
+            # files did not have this option, so adopt immediate release.
+            if "unload_model_immediately" not in values:
+                values["unload_model_immediately"] = True
             config = AppConfig(**values)
             config.validate()
             return config

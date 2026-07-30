@@ -34,7 +34,7 @@ class DictationController:
         on_live_text: Callable[[str, str], None] | None = None,
         on_processing_started: Callable[[], None] | None = None,
         on_recording_finished: Callable[[str, bool], None] | None = None,
-        live_interval_seconds: float = 1.1,
+        live_interval_seconds: float = 0.7,
     ):
         # Resolve the initial device without loading the Whisper model. Settings
         # only expose explicit CPU/GPU choices; unavailable CUDA becomes CPU.
@@ -60,6 +60,7 @@ class DictationController:
         self._target_window: int | None = None
         self._live_stop = threading.Event()
         self._live_thread: threading.Thread | None = None
+        self._prepare_thread: threading.Thread | None = None
         self._unload_timer: threading.Timer | None = None
 
     @property
@@ -82,6 +83,15 @@ class DictationController:
             self._live_stop.clear()
             self._on_recording_started()
             if self.config.live_preview_enabled and hasattr(recorder, "snapshot_to_wav"):
+                # Start loading at key-down rather than after the first live
+                # snapshot. This makes the first spoken phrase eligible for
+                # preview while retaining immediate post-dictation unload.
+                self._prepare_thread = threading.Thread(
+                    target=self._prepare_worker,
+                    name="whisper-prepare-worker",
+                    daemon=True,
+                )
+                self._prepare_thread.start()
                 self._live_thread = threading.Thread(
                     target=self._live_worker,
                     args=(recorder,),
@@ -98,6 +108,17 @@ class DictationController:
             self._logger.exception("Could not start microphone recording")
             self._error(f"Не удалось открыть микрофон: {exc}")
             return False
+
+    def _prepare_worker(self) -> None:
+        try:
+            transcriber = self._get_transcriber()
+            prepare = getattr(transcriber, "prepare", None)
+            if callable(prepare):
+                prepare()
+        except Exception:
+            # Final transcription remains the authoritative path and will
+            # present an actionable error if loading cannot recover.
+            self._logger.warning("Early Whisper preparation for live preview failed", exc_info=True)
 
     def finish(self) -> None:
         with self._lock:
@@ -229,7 +250,8 @@ class DictationController:
         """Do not release a model while a preview/final worker can still use it."""
         with self._lock:
             live_running = self._live_thread is not None and self._live_thread.is_alive()
-            if self._state is not DictationState.IDLE or live_running:
+            prepare_running = self._prepare_thread is not None and self._prepare_thread.is_alive()
+            if self._state is not DictationState.IDLE or live_running or prepare_running:
                 # A preview worker is normally exiting after finish; retry briefly.
                 timer = threading.Timer(0.25, self._unload_engine_if_idle)
                 timer.daemon = True
