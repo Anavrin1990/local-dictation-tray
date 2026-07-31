@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.3.1",
+    [string]$Version = "0.3.2",
     [string]$EntryPoint,
     [string]$AppName = "Local Dictation",
     [string]$AppExeName = "LocalDictationTray.exe",

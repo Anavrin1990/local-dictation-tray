@@ -19,6 +19,7 @@ class ConfigStoreTests(unittest.TestCase):
             config = ConfigStore(Path(temp) / "config.json").load()
         self.assertEqual(config, AppConfig())
         self.assertEqual(config.hotkey, "ctrl+alt")
+        self.assertIsNone(config.language)
 
     def test_original_default_hotkey_is_migrated(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -31,7 +31,7 @@ class LocalWhisperTranscriber:
     def __init__(
         self,
         model_name: str = "small",
-        language: str | None = "ru",
+        language: str | None = None,
         execution_device: str = "cuda",
         logger: logging.Logger | None = None,
     ):

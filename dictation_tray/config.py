@@ -15,7 +15,8 @@ class AppConfig:
     model: str = "small"
     # The initial value is resolved to CUDA or CPU during tray startup.
     execution_device: str = "cuda"
-    language: str = "ru"
+    # Let Whisper detect the spoken language unless the user explicitly chooses one.
+    language: str | None = None
     microphone: str | None = None
     sample_rate: int = 16000
     auto_paste: bool = True
