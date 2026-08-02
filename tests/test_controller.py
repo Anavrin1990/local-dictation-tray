@@ -40,8 +40,9 @@ class FakeTranscriber:
     def __init__(self, text: str = "готовый текст", error: Exception | None = None):
         self.text = text
         self.error = error
+        self.last_punctuation_retry = "not_needed"
 
-    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+    def transcribe(self, audio_path: Path, **_kwargs) -> tuple[str, str | None]:
         if self.error:
             raise self.error
         return self.text, "ru"
@@ -61,7 +62,7 @@ class LiveFakeRecorder(FakeRecorder):
 
 
 class PreviewAwareTranscriber(FakeTranscriber):
-    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+    def transcribe(self, audio_path: Path, **_kwargs) -> tuple[str, str | None]:
         if audio_path.name.startswith(".live-"):
             return "предварительный текст", "ru"
         return "финальный текст.", "ru"
@@ -159,6 +160,19 @@ class ControllerTests(unittest.TestCase):
         controller.finish()
         self.assertTrue(self.done.wait(2))
         self.assertEqual(len(list((self.root / "recordings").glob("*.wav"))), 1)
+
+    def test_kept_recording_is_marked_when_punctuation_retry_is_accepted(self) -> None:
+        recorder = FakeRecorder(16000, None)
+        transcriber = FakeTranscriber()
+        transcriber.last_punctuation_retry = "accepted"
+        controller = self.controller(recorder, transcriber, keep_recordings=True)
+
+        self.assertTrue(controller.begin())
+        controller.finish()
+        self.assertTrue(self.done.wait(2))
+        recordings = list((self.root / "recordings").glob("*.wav"))
+        self.assertEqual(len(recordings), 1)
+        self.assertIn("punctuation-retry-accepted", recordings[0].name)
 
     def test_whisper_instance_is_reused_between_dictations(self) -> None:
         """Recreating it per hold reloads a several-hundred-MB local model each time."""

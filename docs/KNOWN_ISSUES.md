@@ -28,6 +28,14 @@ directory. A restricted build sandbox may deny that profile path and return code
 2 even when the package is valid. Re-run `scripts\test-package.ps1 -RunSelfCheck`
 with access to the real user `%APPDATA%`; do not weaken the application data path
 or disable the check.
+
+## Pytest cannot write `.pytest_cache`
+
+Some managed workspace sessions deny writes to the existing `.pytest_cache`
+directory. Pytest still executes the suite normally; the warning only means its
+optional cache was not updated. Use `pytest -p no:cacheprovider` when a clean
+warning-free diagnostic run is needed.
+
 # GPU/runtime notes
 
 - `--self-check` deliberately does not open `app.log`: an already-running Windows tray

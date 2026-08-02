@@ -142,6 +142,7 @@ class DictationController:
                 return
             transcriber = self._get_transcriber()
             text, language = transcriber.transcribe(wav_path)
+            retry_status = getattr(transcriber, "last_punctuation_retry", "not_available")
             fallback_error = getattr(transcriber, "fallback_error", None)
             effective_device = getattr(transcriber, "effective_device", None)
             if fallback_error:
@@ -155,6 +156,18 @@ class DictationController:
                 self._status("Речь не распознана")
                 return
             final_text = text
+            if self.config.keep_recordings and retry_status in {"accepted", "rejected"}:
+                marked_path = wav_path.with_name(f"{wav_path.stem}-punctuation-retry-{retry_status}.wav")
+                try:
+                    wav_path.replace(marked_path)
+                    wav_path = marked_path
+                except OSError:
+                    self._logger.warning("Could not mark retained recording for punctuation retry")
+            self._logger.info(
+                "Dictation finalized: file=%s retained=%s duration_seconds=%.2f language=%s words=%s punctuation_retry=%s",
+                wav_path.name, self.config.keep_recordings, duration, language,
+                len(text.split()), retry_status,
+            )
             self.history.add(text, duration, language, self.config.history_limit)
             if self.config.auto_paste:
                 restore_foreground_window(self._target_window)
@@ -195,7 +208,12 @@ class DictationController:
                 snapshot = recorder.snapshot_to_wav(live_path, segment_start_frame)
                 if snapshot.duration < 0.65:
                     continue
-                text, _language = self._get_transcriber().transcribe(live_path)
+                # Preview snapshots are repeatedly re-decoded while speech grows,
+                # so they must stay independent. The final pass keeps context and
+                # therefore retains capitalization and punctuation across chunks.
+                text, _language = self._get_transcriber().transcribe(
+                    live_path, condition_on_previous_text=False,
+                )
                 if self._live_stop.is_set():
                     return
                 text = text.strip()

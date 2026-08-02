@@ -67,6 +67,56 @@ class GpuRuntimeTests(unittest.TestCase):
         self.assertTrue(calls[0][1]["local_files_only"])
         self.assertEqual(transcriber.effective_device, "cuda")
 
+    def test_final_transcription_keeps_context_but_preview_can_disable_it(self) -> None:
+        inference_calls: list[dict] = []
+
+        class Model:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def transcribe(self, *_args, **kwargs):
+                inference_calls.append(kwargs)
+                return iter([_Segment()]), _Info()
+
+        module = types.SimpleNamespace(WhisperModel=Model)
+        with patch.dict(os.environ, {"LOCAL_DICTATION_MODEL_DIR": "bundled-small"}):
+            with patch.dict(sys.modules, {"faster_whisper": module}):
+                transcriber = LocalWhisperTranscriber("small", execution_device="cpu")
+                transcriber.transcribe(Path("final.wav"))
+                transcriber.transcribe(Path("preview.wav"), condition_on_previous_text=False)
+
+        self.assertTrue(inference_calls[0]["condition_on_previous_text"])
+        self.assertFalse(inference_calls[1]["condition_on_previous_text"])
+
+    def test_final_retries_flat_text_with_a_punctuation_prompt(self) -> None:
+        inference_calls: list[dict] = []
+
+        class Segment:
+            def __init__(self, text: str):
+                self.text = text
+
+        class Model:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def transcribe(self, *_args, **kwargs):
+                inference_calls.append(kwargs)
+                text = (
+                    "one two, three four five six seven eight nine ten"
+                    if len(inference_calls) == 1
+                    else "One two, three four five six seven eight nine ten."
+                )
+                return iter([Segment(text)]), _Info()
+
+        module = types.SimpleNamespace(WhisperModel=Model)
+        with patch.dict(os.environ, {"LOCAL_DICTATION_MODEL_DIR": "bundled-small"}):
+            with patch.dict(sys.modules, {"faster_whisper": module}):
+                text, _language = LocalWhisperTranscriber("small", execution_device="cpu").transcribe(Path("audio.wav"))
+
+        self.assertEqual(text, "One two, three four five six seven eight nine ten.")
+        self.assertEqual(len(inference_calls), 2)
+        self.assertIsNotNone(inference_calls[1]["initial_prompt"])
+
     def test_explicit_gpu_falls_back_to_cpu_when_cuda_load_fails(self) -> None:
         module, calls = self._model_module({"cuda": RuntimeError("CUDA DLL missing")})
         with patch.object(LocalWhisperTranscriber, "cuda_device_count", return_value=1):

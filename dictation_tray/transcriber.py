@@ -9,6 +9,11 @@ import threading
 from pathlib import Path
 
 
+# A comma inside an otherwise flat phrase is not enough: it does not mark a
+# completed thought or restore sentence capitalization.
+_SENTENCE_PUNCTUATION = frozenset(".!?…")
+
+
 def trim_process_working_set() -> bool:
     """Ask Windows to return unused physical pages; intentionally a no-op elsewhere."""
     if sys.platform != "win32":
@@ -45,6 +50,7 @@ class LocalWhisperTranscriber:
         self.effective_device: str | None = None
         self.effective_compute_type: str | None = None
         self.fallback_error: str | None = None
+        self.last_punctuation_retry = "not_needed"
         self._logger = logger or logging.getLogger("dictation_tray")
         self._model = None
         self._model_lock = threading.RLock()
@@ -159,26 +165,88 @@ class LocalWhisperTranscriber:
             self._logger.debug("Whisper runtime memory cleanup completed: working_set_trimmed=%s", trimmed)
             return True
 
-    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+    def transcribe(
+        self, audio_path: Path, *, condition_on_previous_text: bool = True,
+    ) -> tuple[str, str | None]:
         # CTranslate2 instances are shared by preview/final workers; CUDA failure
         # is retried exactly once with a fresh CPU int8 model.
         with self._transcribe_lock:
             model = self._get_model()
             try:
-                segments, info = model.transcribe(
-                    str(audio_path), language=self.language, vad_filter=True, beam_size=5,
-                    condition_on_previous_text=False,
-                )
-                text = " ".join(segment.text.strip() for segment in segments).strip()
-                return text, getattr(info, "language", self.language)
+                return self._transcribe_with_quality_retry(model, audio_path, condition_on_previous_text)
             except Exception as exc:
                 if self.effective_device != "cuda":
                     raise
                 with self._model_lock:
                     model = self._fallback_to_cpu(exc, "inference failure")
-                segments, info = model.transcribe(
-                    str(audio_path), language=self.language, vad_filter=True, beam_size=5,
-                    condition_on_previous_text=False,
-                )
-                text = " ".join(segment.text.strip() for segment in segments).strip()
-                return text, getattr(info, "language", self.language)
+                return self._transcribe_with_quality_retry(model, audio_path, condition_on_previous_text)
+
+    def _transcribe_with_quality_retry(
+        self, model, audio_path: Path, condition_on_previous_text: bool,
+    ) -> tuple[str, str | None]:
+        text, language = self._transcribe_once(
+            model, audio_path, language=self.language,
+            condition_on_previous_text=condition_on_previous_text,
+        )
+        # Preview runs repeatedly while audio grows.  Only a completed
+        # dictation may spend one extra pass to repair a clearly flat result.
+        self.last_punctuation_retry = "not_needed"
+        if not condition_on_previous_text or not self._needs_punctuation_retry(text):
+            return text, language
+
+        self.last_punctuation_retry = "attempted"
+        self._logger.info(
+            "Whisper punctuation retry started: file=%s words=%s",
+            audio_path.name, len(text.split()),
+        )
+        retry_text, retry_language = self._transcribe_once(
+            model, audio_path, language=language or self.language,
+            condition_on_previous_text=True,
+            initial_prompt=self._punctuation_prompt(language),
+        )
+        if self._is_better_punctuated_retry(text, retry_text):
+            self.last_punctuation_retry = "accepted"
+            self._logger.info(
+                "Whisper punctuation retry accepted: file=%s words_before=%s words_after=%s",
+                audio_path.name, len(text.split()), len(retry_text.split()),
+            )
+            return retry_text, retry_language
+        self.last_punctuation_retry = "rejected"
+        self._logger.info(
+            "Whisper punctuation retry rejected: file=%s words_before=%s words_after=%s",
+            audio_path.name, len(text.split()), len(retry_text.split()),
+        )
+        return text, language
+
+    @staticmethod
+    def _needs_punctuation_retry(text: str) -> bool:
+        words = text.split()
+        return len(words) >= 8 and text[:1].islower() and not any(char in _SENTENCE_PUNCTUATION for char in text)
+
+    @staticmethod
+    def _is_better_punctuated_retry(original: str, retry: str) -> bool:
+        original_words = original.split()
+        retry_words = retry.split()
+        return (
+            len(retry_words) >= max(1, int(len(original_words) * 0.8))
+            and retry[:1].isupper()
+            and any(char in _SENTENCE_PUNCTUATION for char in retry)
+        )
+
+    @staticmethod
+    def _punctuation_prompt(language: str | None) -> str:
+        if language == "ru":
+            return "Текст с заглавными буквами и знаками препинания."
+        return "Text with proper capitalization and punctuation."
+
+    @staticmethod
+    def _transcribe_once(
+        model, audio_path: Path, *, language: str | None, condition_on_previous_text: bool,
+        initial_prompt: str | None = None,
+    ) -> tuple[str, str | None]:
+        segments, info = model.transcribe(
+            str(audio_path), language=language, vad_filter=True, beam_size=5,
+            condition_on_previous_text=condition_on_previous_text, initial_prompt=initial_prompt,
+        )
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return text, getattr(info, "language", language)
